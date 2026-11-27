@@ -42,6 +42,7 @@ import com.winlator.contentdialog.ContentDialog;
 import com.winlator.contentdialog.VortekConfigDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.Callback;
+import com.winlator.core.DexUtils;
 import com.winlator.container.DXWrapperPicker;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
@@ -134,7 +135,7 @@ public class ContainerDetailFragment extends Fragment {
         final Spinner sWineVersion = view.findViewById(R.id.SWineVersion);
         if (wineInfos.size() > 1) loadWineVersionSpinner(view, sWineVersion, wineInfos);
 
-        loadScreenSizeSpinner(view, isEditMode() ? container.getScreenSize() : Container.DEFAULT_SCREEN_SIZE);
+        loadScreenSizeSpinner(view, isEditMode() ? container.getScreenSize() : getDefaultScreenSize(context));
 
         final String oldGraphicsDriverConfig = isEditMode() ? container.getGraphicsDriverConfig() : "";
         String selectedGraphicsDriver = isEditMode() ? container.getGraphicsDriver() : GraphicsDrivers.getDefaultDriver(context);
@@ -342,6 +343,10 @@ public class ContainerDetailFragment extends Fragment {
             sMouseWarpOverride.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, mouseWarpOverrideList));
             AppUtils.setSpinnerSelectionFromValue(sMouseWarpOverride, registryEditor.getStringValue("Software\\Wine\\DirectInput", "MouseWarpOverride", "disable"));
         }
+    }
+
+    public static String getDefaultScreenSize(Context context) {
+        return (DexUtils.isDesktopMode(context) || DexUtils.hasExternalDisplay(context)) ? "1920x1080" : Container.DEFAULT_SCREEN_SIZE;
     }
 
     public static String getScreenSize(View view) {

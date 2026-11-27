@@ -17,6 +17,7 @@ import android.view.View;
 import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.Spinner;
 
 import androidx.annotation.NonNull;
@@ -46,6 +47,7 @@ import com.winlator.contentdialog.VirGLConfigDialog;
 import com.winlator.contentdialog.WineD3DConfigDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.DefaultVersion;
+import com.winlator.core.DexUtils;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
 import com.winlator.core.GeneralComponents;
@@ -127,6 +129,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private final EnvVars envVars = new EnvVars();
     private EnvVars overrideEnvVars;
     private ClipboardManager clipboardManager;
+    private ClipboardManager.OnPrimaryClipChangedListener primaryClipListener;
+    private String lastPushedClip = "";
+    private boolean dexMode = false;
+    private boolean gameMode = true;
+    private ImageButton pointerExitButton;
     private SharedPreferences preferences;
     private final WinHandler winHandler = new WinHandler(this);
     private float globalCursorSpeed = 1.0f;
@@ -148,8 +155,14 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
         preferences = PreferenceManager.getDefaultSharedPreferences(this);
-        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false);
+        dexMode = DexUtils.isDesktopMode(this);
+        gameMode = preferences.getBoolean("game_mode", !dexMode);
+        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false) || dexMode;
         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
+        if (clipboardManager != null) {
+            primaryClipListener = this::pushAndroidClipboardToWine;
+            clipboardManager.addPrimaryClipChangedListener(primaryClipListener);
+        }
 
         drawerLayout = findViewById(R.id.DrawerLayout);
         drawerLayout.setOnApplyWindowInsetsListener((view, windowInsets) -> windowInsets.replaceSystemWindowInsets(0, 0, 0, 0));
@@ -298,14 +311,20 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         super.onWindowFocusChanged(hasFocus);
 
         if (hasFocus) {
-            if (capturePointerOnExternalMouse) touchpadView.requestPointerCapture();
+            if (capturePointerOnExternalMouse && gameMode && !dexMode) touchpadView.requestPointerCapture();
 
-            if (winHandler != null && clipboardManager != null && clipboardManager.hasPrimaryClip()) {
-                ClipData primaryClip = clipboardManager.getPrimaryClip();
-                if (primaryClip != null && primaryClip.getItemCount() > 0) {
-                    winHandler.setClipboardData(primaryClip.getItemAt(0).getText().toString());
-                }
-            }
+            pushAndroidClipboardToWine();
+        }
+    }
+
+    private void pushAndroidClipboardToWine() {
+        if (winHandler == null || clipboardManager == null || !clipboardManager.hasPrimaryClip()) return;
+        ClipData primaryClip = clipboardManager.getPrimaryClip();
+        if (primaryClip == null || primaryClip.getItemCount() == 0 || primaryClip.getItemAt(0).getText() == null) return;
+        String text = primaryClip.getItemAt(0).getText().toString();
+        if (!text.equals(lastPushedClip)) {
+            lastPushedClip = text;
+            winHandler.setClipboardData(text);
         }
     }
 
@@ -337,6 +356,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     protected void onDestroy() {
+        if (clipboardManager != null && primaryClipListener != null) clipboardManager.removePrimaryClipChangedListener(primaryClipListener);
         winHandler.stop();
         if (environment != null) environment.stopEnvironmentComponents();
         ForegroundService.stopSession(this);
@@ -346,6 +366,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     @Override
     public void onBackPressed() {
         if (environment != null) {
+            touchpadView.releaseCapture();
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) {
                 drawerLayout.openDrawer(GravityCompat.START);
             }
@@ -356,6 +377,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     @Override
     public boolean onNavigationItemSelected(@NonNull MenuItem item) {
         final GLRenderer renderer = xServerView.getRenderer();
+        touchpadView.releaseCapture();
         switch (item.getItemId()) {
             case R.id.menu_item_keyboard:
                 AppUtils.showKeyboard(this);
@@ -513,6 +535,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             envVars.putAll(container.getEnvVars());
             if (shortcut != null) envVars.putAll(shortcut.getExtra("envVars"));
             if (!envVars.has("WINEESYNC")) envVars.put("WINEESYNC", "1");
+            if (!gameMode && !envVars.has("WINEDLLOVERRIDES")) envVars.put("WINEDLLOVERRIDES", "powershell.exe=d");
 
             guestProgramLauncherComponent.setBox64Preset(shortcut != null ? shortcut.getExtra("box64Preset", container.getBox64Preset()) : container.getBox64Preset());
         }
@@ -590,12 +613,40 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         globalCursorSpeed = preferences.getFloat("cursor_speed", 1.0f);
         capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true);
         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
-        touchpadView.setSensitivity(globalCursorSpeed);
+        touchpadView.setSensitivity(globalCursorSpeed * (dexMode ? DexUtils.getSystemPointerSpeedFactor(this) : 1.0f));
         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
         touchpadView.setFourFingersTapCallback(() -> {
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });
+        touchpadView.setPointerCaptureListener(new TouchpadView.PointerCaptureListener() {
+            @Override
+            public void onPointerCaptureChange(boolean hasCapture) {
+                pointerExitButton.setVisibility(hasCapture ? View.VISIBLE : View.GONE);
+            }
+
+            @Override
+            public void onEdgeExit() {
+                AppUtils.showToast(XServerDisplayActivity.this, R.string.pointer_capture_released);
+            }
+        });
         rootView.addView(touchpadView);
+
+        pointerExitButton = new ImageButton(this);
+        pointerExitButton.setImageResource(R.drawable.icon_exit);
+        pointerExitButton.setContentDescription(getString(R.string.release_pointer_capture));
+        pointerExitButton.setBackgroundResource(android.R.drawable.btn_default);
+        pointerExitButton.setAlpha(0.75f);
+        FrameLayout.LayoutParams exitParams = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        exitParams.gravity = android.view.Gravity.END | android.view.Gravity.BOTTOM;
+        exitParams.setMargins(0, 0, 32, 96);
+        pointerExitButton.setLayoutParams(exitParams);
+        pointerExitButton.setVisibility(View.GONE);
+        pointerExitButton.setOnClickListener((view) -> {
+            touchpadView.releaseCapture();
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+        });
+        rootView.addView(pointerExitButton);
+        applyGameMode(false);
 
         inputControlsView = new InputControlsView(this);
         inputControlsView.setOverlayOpacity(preferences.getFloat("overlay_opacity", InputControlsView.DEFAULT_OVERLAY_OPACITY));
@@ -648,6 +699,11 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         final CheckBox cbRelativeMouseMovement = dialog.findViewById(R.id.CBRelativeMouseMovement);
         cbRelativeMouseMovement.setChecked(xServer.isRelativeMouseMovement());
 
+        final CheckBox cbGameMode = dialog.findViewById(R.id.CBGameMode);
+        cbGameMode.setChecked(gameMode);
+        cbGameMode.setOnCheckedChangeListener((button, checked) -> cbRelativeMouseMovement.setEnabled(checked));
+        cbRelativeMouseMovement.setEnabled(gameMode);
+
         final CheckBox cbShowTouchscreenControls = dialog.findViewById(R.id.CBShowTouchscreenControls);
         cbShowTouchscreenControls.setChecked(inputControlsView.isShowTouchscreenControls());
 
@@ -665,7 +721,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         });
 
         dialog.setOnConfirmCallback(() -> {
-            xServer.setRelativeMouseMovement(cbRelativeMouseMovement.isChecked());
+            gameMode = cbGameMode.isChecked();
+            preferences.edit().putBoolean("game_mode", gameMode).apply();
+            applyGameMode(true);
+            xServer.setRelativeMouseMovement(gameMode && cbRelativeMouseMovement.isChecked());
             inputControlsView.setShowTouchscreenControls(cbShowTouchscreenControls.isChecked());
             int position = sProfile.getSelectedItemPosition();
             if (position > 0) {
@@ -786,6 +845,22 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         dialog.show();
     }
 
+    // Office mode (gameMode=false): absolute mouse, no capture, cursor always visible.
+    private void applyGameMode(boolean notifyUser) {
+        if (touchpadView == null) return;
+        if (!gameMode) {
+            xServer.setRelativeMouseMovement(false);
+            touchpadView.setCaptureAllowed(false);
+            xServerView.getRenderer().setCursorVisible(true);
+            if (notifyUser) AppUtils.showToast(this, R.string.office_mode_enabled);
+        }
+        else {
+            touchpadView.setCaptureAllowed(capturePointerOnExternalMouse && !dexMode);
+            if (notifyUser) AppUtils.showToast(this, R.string.game_mode_enabled);
+        }
+        if (dexMode && !notifyUser) AppUtils.showToast(this, R.string.dex_mode_enabled);
+    }
+
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
         return !winHandler.onGenericMotionEvent(event) && !touchpadView.onExternalMouseEvent(event) && super.dispatchGenericMotionEvent(event);
@@ -793,6 +868,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_G
+            && event.isCtrlPressed() && event.isAltPressed()) {
+            touchpadView.releaseCapture();
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+            return true;
+        }
         return (!inputControlsView.onKeyEvent(event) && !winHandler.onKeyEvent(event) && xServer.keyboard.onKeyEvent(event)) ||
                (!ExternalController.isGameController(event.getDevice()) && super.dispatchKeyEvent(event));
     }
