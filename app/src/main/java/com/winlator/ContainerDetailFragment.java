@@ -441,7 +441,12 @@ public class ContainerDetailFragment extends Fragment {
     private EnvVarsView createEnvVarsTab(final View view) {
         final Context context = view.getContext();
         final EnvVarsView envVarsView = view.findViewById(R.id.EnvVarsView);
-        envVarsView.setEnvVars(new EnvVars(isEditMode() ? container.getEnvVars() : Container.DEFAULT_ENV_VARS));
+        EnvVars defaultEnvVars = new EnvVars(isEditMode() ? container.getEnvVars() : Container.DEFAULT_ENV_VARS);
+        if (!isEditMode() && (DexUtils.isDesktopMode(context) || DexUtils.hasExternalDisplay(context))
+            && !defaultEnvVars.has("WINEDLLOVERRIDES")) {
+            defaultEnvVars.put("WINEDLLOVERRIDES", "powershell.exe=d");
+        }
+        envVarsView.setEnvVars(defaultEnvVars);
         view.findViewById(R.id.BTAddEnvVar).setOnClickListener((v) -> (new AddEnvVarDialog(context, envVarsView)).show());
         return envVarsView;
     }

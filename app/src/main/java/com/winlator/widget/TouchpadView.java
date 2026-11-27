@@ -11,6 +11,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 
 import com.winlator.core.AppUtils;
+import com.winlator.core.DexUtils;
 import com.winlator.math.Mathf;
 import com.winlator.math.XForm;
 import com.winlator.renderer.ViewTransformation;
@@ -89,6 +90,10 @@ public class TouchpadView extends View implements View.OnCapturedPointerListener
     }
 
     private void trackEdgeExit(int dx, int dy) {
+        if (!DexUtils.isDesktopMode(getContext())) {
+            edgePushCount = 0;
+            return;
+        }
         if (!captureAllowed || xServer.isRelativeMouseMovement() || !hasPointerCapture()) {
             edgePushCount = 0;
             return;
