@@ -18,6 +18,7 @@ import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
+import android.widget.LinearLayout;
 import android.widget.Spinner;
 
 import androidx.annotation.NonNull;
@@ -134,6 +135,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private boolean dexMode = false;
     private boolean gameMode = true;
     private ImageButton pointerExitButton;
+    private LinearLayout quickBar;
     private SharedPreferences preferences;
     private final WinHandler winHandler = new WinHandler(this);
     private float globalCursorSpeed = 1.0f;
@@ -156,8 +158,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
         preferences = PreferenceManager.getDefaultSharedPreferences(this);
         dexMode = DexUtils.isDesktopMode(this);
-        gameMode = preferences.getBoolean("game_mode", !dexMode);
-        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false) || dexMode;
+        boolean gameUserSet = preferences.getBoolean("game_mode_user_set", false);
+        gameMode = gameUserSet ? preferences.getBoolean("game_mode", true) : !dexMode;
+        boolean clipUserSet = preferences.getBoolean("use_android_clipboard_on_wine_user_set", false);
+        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false) || (!clipUserSet && dexMode);
         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
         if (clipboardManager != null) {
             primaryClipListener = this::pushAndroidClipboardToWine;
@@ -646,6 +650,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });
         rootView.addView(pointerExitButton);
+        setupQuickBar(rootView);
         applyGameMode(false);
 
         inputControlsView = new InputControlsView(this);
@@ -722,7 +727,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         dialog.setOnConfirmCallback(() -> {
             gameMode = cbGameMode.isChecked();
-            preferences.edit().putBoolean("game_mode", gameMode).apply();
+            preferences.edit().putBoolean("game_mode", gameMode).putBoolean("game_mode_user_set", true).apply();
             applyGameMode(true);
             xServer.setRelativeMouseMovement(gameMode && cbRelativeMouseMovement.isChecked());
             inputControlsView.setShowTouchscreenControls(cbShowTouchscreenControls.isChecked());
@@ -843,6 +848,56 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         dialog.setIcon(R.drawable.icon_help);
         dialog.findViewById(R.id.BTCancel).setVisibility(View.GONE);
         dialog.show();
+    }
+
+    private ImageButton makeQuickButton(int iconResId, int descResId, View.OnClickListener onClick) {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(iconResId);
+        button.setContentDescription(getString(descResId));
+        button.setBackgroundResource(android.R.drawable.btn_default);
+        button.setAlpha(0.75f);
+        button.setOnClickListener(onClick);
+        return button;
+    }
+
+    // Mouse-driven quick actions inside the container/shortcut session, no shortcut knowledge needed.
+    private void setupQuickBar(FrameLayout rootView) {
+        float density = getResources().getDisplayMetrics().density;
+        int margin = (int)(12 * density);
+
+        LinearLayout quickPanel = new LinearLayout(this);
+        quickPanel.setOrientation(LinearLayout.VERTICAL);
+        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        panelParams.gravity = android.view.Gravity.END | android.view.Gravity.TOP;
+        panelParams.setMargins(0, margin, margin, 0);
+        quickPanel.setLayoutParams(panelParams);
+
+        ImageButton quickToggle = makeQuickButton(R.drawable.icon_settings, R.string.quick_actions, (view) -> {
+            quickBar.setVisibility(quickBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+        });
+        quickPanel.addView(quickToggle);
+
+        quickBar = new LinearLayout(this);
+        quickBar.setOrientation(LinearLayout.VERTICAL);
+        quickBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams barItemParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        barItemParams.topMargin = margin;
+        ImageButton keyboardButton = makeQuickButton(R.drawable.icon_keyboard, R.string.keyboard, (view) -> AppUtils.showKeyboard(this));
+        ImageButton gameModeButton = makeQuickButton(R.drawable.icon_input_controls, R.string.toggle_game_office_mode, (view) -> toggleGameMode());
+        ImageButton menuButton = makeQuickButton(R.drawable.icon_menu, R.string.open_menu, (view) -> {
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+        });
+        quickBar.addView(keyboardButton, barItemParams);
+        quickBar.addView(gameModeButton, barItemParams);
+        quickBar.addView(menuButton, barItemParams);
+        quickPanel.addView(quickBar);
+        rootView.addView(quickPanel);
+    }
+
+    private void toggleGameMode() {
+        gameMode = !gameMode;
+        preferences.edit().putBoolean("game_mode", gameMode).putBoolean("game_mode_user_set", true).apply();
+        applyGameMode(true);
     }
 
     // Office mode (gameMode=false): absolute mouse, no capture, cursor always visible.
