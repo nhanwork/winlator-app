@@ -63,7 +63,8 @@ public class LogView extends View {
 
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
         String logPath = preferences.getString("log_file", getLogFile().getPath());
-        boolean saveToFile = preferences.getBoolean("save_logs_to_file", false);
+        // DeX fork: always persist console output for crash reports.
+        boolean saveToFile = preferences.getBoolean("save_logs_to_file", true);
 
         File logFile = new File(logPath);
         FileUtils.delete(logFile);
@@ -222,7 +223,7 @@ public class LogView extends View {
     }
 
     public static File getLogFile() {
-        File parent = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "Winlator");
+        File parent = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS), "WinlatorDeX");
         if (!parent.isDirectory()) parent.mkdirs();
         return new File(parent, "logs.txt");
     }

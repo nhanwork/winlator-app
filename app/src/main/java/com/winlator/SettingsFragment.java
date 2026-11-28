@@ -35,12 +35,12 @@ import com.winlator.box64.Box64PresetManager;
 import com.winlator.container.Container;
 import com.winlator.container.ContainerManager;
 import com.winlator.contentdialog.ContentDialog;
-import com.winlator.contentdialog.GamepadPlayerConfigDialog;
 import com.winlator.contentdialog.SoundFontTestDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.ArrayUtils;
 import com.winlator.core.Callback;
 import com.winlator.core.DefaultVersion;
+import com.winlator.core.DexUtils;
 import com.winlator.core.FileUtils;
 import com.winlator.core.GeneralComponents;
 import com.winlator.core.LocaleHelper;
@@ -51,7 +51,6 @@ import com.winlator.core.WineInstaller;
 import com.winlator.widget.ColorPickerView;
 import com.winlator.widget.LogView;
 import com.winlator.widget.SeekBar;
-import com.winlator.winhandler.GamepadHandler;
 import com.winlator.xenvironment.RootFS;
 import com.winlator.xenvironment.RootFSInstaller;
 
@@ -126,9 +125,6 @@ public class SettingsFragment extends Fragment {
         final int oldAppThemeId = preferences.getInt("app_theme", APP_THEME_DARK) == APP_THEME_DARK ? R.id.RBDark : R.id.RBLight;
         rgAppTheme.check(oldAppThemeId);
 
-        final CheckBox cbMoveCursorToTouchpoint = view.findViewById(R.id.CBMoveCursorToTouchpoint);
-        cbMoveCursorToTouchpoint.setChecked(preferences.getBoolean("move_cursor_to_touchpoint", false));
-
         final CheckBox cbCapturePointerOnExternalMouse = view.findViewById(R.id.CBCapturePointerOnExternalMouse);
         cbCapturePointerOnExternalMouse.setChecked(preferences.getBoolean("capture_pointer_on_external_mouse", true));
 
@@ -136,7 +132,8 @@ public class SettingsFragment extends Fragment {
         cbOpenAndroidBrowserFromWine.setChecked(preferences.getBoolean("open_android_browser_from_wine", true));
 
         final CheckBox cbUseAndroidClipboardOnWine = view.findViewById(R.id.CBUseAndroidClipboardOnWine);
-        cbUseAndroidClipboardOnWine.setChecked(preferences.getBoolean("use_android_clipboard_on_wine", false));
+        cbUseAndroidClipboardOnWine.setChecked(preferences.getBoolean("use_android_clipboard_on_wine", false)
+            || DexUtils.isDesktopMode(view.getContext()));
 
         final CheckBox cbEnableWineDebug = view.findViewById(R.id.CBEnableWineDebug);
         cbEnableWineDebug.setChecked(preferences.getBoolean("enable_wine_debug", false));
@@ -166,9 +163,6 @@ public class SettingsFragment extends Fragment {
         cpvCursorColor.setPalette(0xffffff, 0x000000, 0x651fff, 0xffea00, 0xff9100, 0xf50057, 0x00b0ff, 0x1de9b6);
         cpvCursorColor.setColor(preferences.getInt("cursor_color", 0xffffff));
 
-        final Spinner sGamepadModel = view.findViewById(R.id.SGamepadModel);
-        loadGamepadModelSpinner(sGamepadModel);
-
         final Spinner sWineVersion = view.findViewById(R.id.SWineVersion);
         loadWineVersionSpinner(view, sWineVersion);
 
@@ -180,8 +174,6 @@ public class SettingsFragment extends Fragment {
             ContentDialog.confirm(context, R.string.do_you_want_to_reinstall_system_files, () -> RootFSInstaller.install((MainActivity)getActivity()));
         });
 
-        loadGamepadPlayerConfigs(view);
-
         if (MainActivity.DEBUG_MODE) {
             view.findViewById(R.id.LLWineInstallation).setVisibility(View.VISIBLE);
         }
@@ -191,7 +183,6 @@ public class SettingsFragment extends Fragment {
             editor.putString("soundfont", sSoundFont.getSelectedItem().toString());
             editor.putString("box64_version", StringUtils.parseIdentifier(sBox64Version.getSelectedItem()));
             editor.putString("box64_preset", Box64PresetManager.getSpinnerSelectedId(sBox64Preset));
-            editor.putBoolean("move_cursor_to_touchpoint", cbMoveCursorToTouchpoint.isChecked());
             editor.putBoolean("capture_pointer_on_external_mouse", cbCapturePointerOnExternalMouse.isChecked());
             editor.putFloat("cursor_speed", sbCursorSpeed.getValue() / 100.0f);
             editor.putFloat("cursor_scale", sbCursorSize.getValue() / 100.0f);
@@ -201,14 +192,6 @@ public class SettingsFragment extends Fragment {
             editor.putBoolean("save_logs_to_file", cbSaveLogsToFile.isChecked());
             editor.putBoolean("open_android_browser_from_wine", cbOpenAndroidBrowserFromWine.isChecked());
             editor.putBoolean("use_android_clipboard_on_wine", cbUseAndroidClipboardOnWine.isChecked());
-            putGamepadPlayerConfigs(view, editor);
-
-            GamepadHandler.GamepadModel gamepadModel = (GamepadHandler.GamepadModel)sGamepadModel.getAdapter().getItem(sGamepadModel.getSelectedItemPosition());
-            if (gamepadModel.vendorId > 1 && gamepadModel.productId > 1) {
-                editor.putString("gamepad_model", gamepadModel.identifier());
-            }
-            else editor.remove("gamepad_model");
-
             int newAppThemeId = rgAppTheme.getCheckedRadioButtonId();
             editor.putInt("app_theme", newAppThemeId == R.id.RBLight ? APP_THEME_LIGHT : APP_THEME_DARK);
 
@@ -245,23 +228,6 @@ public class SettingsFragment extends Fragment {
         });
 
         return view;
-    }
-
-    private void loadGamepadModelSpinner(Spinner sGamepadModel) {
-        final Context context = getContext();
-        ArrayList<GamepadHandler.GamepadModel> gamepadModels = GamepadHandler.loadGamepadModels(context);
-
-        String selectedModel = preferences.getString("gamepad_model", "");
-        int selectedPosition = 0;
-        for (int i = 0; i < gamepadModels.size(); i++) {
-            if (gamepadModels.get(i).identifier().equals(selectedModel)) {
-                selectedPosition = i;
-                break;
-            }
-        }
-
-        sGamepadModel.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, gamepadModels));
-        sGamepadModel.setSelection(selectedPosition);
     }
 
     private void loadBox64PresetSpinner(View view, final Spinner sBox64Preset) {
@@ -511,32 +477,4 @@ public class SettingsFragment extends Fragment {
         }
     }
 
-    private void loadGamepadPlayerConfigs(View view) {
-        LinearLayout container = view.findViewById(R.id.LLGamepadPlayer);
-        view.findViewById(R.id.BTResetGamepadPlayerConfigs).setOnClickListener((v) -> {
-            ContentDialog.confirm(v.getContext(), R.string.do_you_want_to_reset_configurations, () -> {
-                for (int i = 0; i < container.getChildCount(); i++) container.getChildAt(i).setTag("");
-            });
-        });
-
-        for (int i = 0; i < container.getChildCount(); i++) {
-            final View child = container.getChildAt(i);
-            child.setTag(preferences.getString("gamepad_player"+i, ""));
-            final byte slot = (byte)i;
-            child.setOnClickListener((v) -> (new GamepadPlayerConfigDialog(child, slot)).show());
-        }
-    }
-
-    private void putGamepadPlayerConfigs(View view, SharedPreferences.Editor editor) {
-        LinearLayout container = view.findViewById(R.id.LLGamepadPlayer);
-        for (int i = 0; i < container.getChildCount(); i++) {
-            View child = container.getChildAt(i);
-            String config = child.getTag().toString();
-            String key = "gamepad_player"+i;
-            if (!config.isEmpty()) {
-                editor.putString(key, child.getTag().toString());
-            }
-            else editor.remove(key);
-        }
-    }
 }

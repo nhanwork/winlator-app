@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Winlator</string>
+    <string name="app_name">Winlator DeX</string>
     <string name="run">Run</string>
     <string name="edit">Edit</string>
     <string name="remove">Remove</string>
@@ -348,4 +348,12 @@
     <string name="ddraw_wrapper" translatable="false">DDraw Wrapper</string>
     <string name="renderer">Renderer</string>
     <string name="default_no_override">Default (No override)</string>
+    <string name="dex_only_build">This build requires Samsung DeX or an external display</string>
+    <string name="release_pointer_capture">Release mouse</string>
+    <string name="pointer_capture_released">Mouse released — click the window to resume</string>
+    <string name="dex_mode_enabled">DeX mode: absolute mouse, clipboard sync on</string>
+    <string name="quick_actions">Quick actions</string>
+    <string name="open_menu">Open menu</string>
+    <string name="touchpad_help_pointer_capture_title">Release Mouse (DeX / external mouse)</string>
+    <string name="touchpad_help_pointer_capture_description">Push the mouse to a screen edge, tap the exit button, or press Ctrl+Alt+G</string>
 </resources>

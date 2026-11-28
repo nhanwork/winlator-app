@@ -1,7 +1,7 @@
 package com.winlator;
 
 import android.app.Activity;
-import android.app.PictureInPictureParams;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -9,14 +9,12 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Bundle;
 import android.view.KeyEvent;
-import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
-import android.widget.ArrayAdapter;
-import android.widget.CheckBox;
 import android.widget.FrameLayout;
-import android.widget.Spinner;
+import android.widget.ImageButton;
+import android.widget.LinearLayout;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -45,6 +43,7 @@ import com.winlator.contentdialog.VirGLConfigDialog;
 import com.winlator.contentdialog.WineD3DConfigDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.DefaultVersion;
+import com.winlator.core.DexUtils;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
 import com.winlator.core.GeneralComponents;
@@ -68,6 +67,7 @@ import com.winlator.math.Mathf;
 import com.winlator.renderer.GLRenderer;
 import com.winlator.widget.FrameRating;
 import com.winlator.widget.InputControlsView;
+import com.winlator.widget.LogView;
 import com.winlator.widget.MagnifierView;
 import com.winlator.widget.TouchpadView;
 import com.winlator.widget.XServerView;
@@ -112,7 +112,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private InputControlsManager inputControlsManager;
     private RootFS rootFS;
     private FrameRating frameRating;
-    private Runnable editInputControlsCallback;
     private Shortcut shortcut;
     private String[] graphicsDriver = {GraphicsDrivers.DEFAULT_VULKAN_DRIVER, GraphicsDrivers.DEFAULT_OPENGL_DRIVER};
     private String audioDriver = Container.DEFAULT_AUDIO_DRIVER;
@@ -126,6 +125,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     private final EnvVars envVars = new EnvVars();
     private EnvVars overrideEnvVars;
     private ClipboardManager clipboardManager;
+    private ClipboardManager.OnPrimaryClipChangedListener primaryClipListener;
+    private String lastPushedClip = "";
+    private boolean firstWindowMapped = false;
+    private boolean dexMode = false;
+    private ImageButton pointerExitButton;
+    private LinearLayout quickBar;
     private SharedPreferences preferences;
     private final WinHandler winHandler = new WinHandler(this);
     private float globalCursorSpeed = 1.0f;
@@ -146,8 +151,13 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         final PreloaderDialog preloaderDialog = new PreloaderDialog(this);
         preferences = PreferenceManager.getDefaultSharedPreferences(this);
-        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false);
+        dexMode = DexUtils.isDesktopMode(this);
+        boolean useAndroidClipboardOnWine = preferences.getBoolean("use_android_clipboard_on_wine", false) || dexMode;
         clipboardManager = useAndroidClipboardOnWine ? (ClipboardManager)getSystemService(CLIPBOARD_SERVICE) : null;
+        if (clipboardManager != null) {
+            primaryClipListener = this::pushAndroidClipboardToWine;
+            clipboardManager.addPrimaryClipChangedListener(primaryClipListener);
+        }
 
         drawerLayout = findViewById(R.id.DrawerLayout);
         drawerLayout.setOnApplyWindowInsetsListener((view, windowInsets) -> windowInsets.replaceSystemWindowInsets(0, 0, 0, 0));
@@ -155,10 +165,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         NavigationView navigationView = findViewById(R.id.NavigationView);
         ProcessHelper.removeAllDebugCallbacks();
-        boolean enableLogs = preferences.getBoolean("enable_wine_debug", false) || preferences.getInt("box64_logs", 0) >= 1;
-        if (enableLogs) ProcessHelper.addDebugCallback(debugDialog = new DebugDialog(this));
-        Menu menu = navigationView.getMenu();
-        menu.findItem(R.id.menu_item_logs).setVisible(enableLogs);
+        // DeX fork: console UI hidden, but keep headless logging so sessions
+        // always write Documents/WinlatorDeX/logs.txt for crash reports.
+        ProcessHelper.addDebugCallback(debugDialog = new DebugDialog(this));
         navigationView.setNavigationItemSelectedListener(this);
 
         rootFS = RootFS.find(this);
@@ -229,6 +238,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
 
         preloaderDialog.show(R.string.starting_up);
+        DexUtils.appendMarker(this, "setupXEnvironment begin (fork build "+DexUtils.FORK_BUILD+")");
+        if (!isGenerateWineprefix() && !isContainerPrefixValid()) {
+            AppUtils.showToast(this, "Prefix hỏng — xóa container này và tạo lại");
+            finish();
+            return;
+        }
 
         inputControlsManager = new InputControlsManager(this);
         xServer = new XServer(this, screenInfo);
@@ -243,7 +258,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             @Override
             public void onMapWindow(Window window) {
                 if (!flags[0] && window.isRenderable() && !window.getClassName().isEmpty()) {
-                    xServerView.getRenderer().setCursorVisible(true);
+                    firstWindowMapped = true;
+                    DexUtils.appendMarker(XServerDisplayActivity.this, "first window mapped: " + window.getClassName());
+                    updateCursorVisibility();
                     preloaderDialog.closeOnUiThread();
                     flags[0] = true;
                 }
@@ -281,29 +298,28 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     }
 
     @Override
-    protected void onActivityResult(int requestCode, int resultCode, @Nullable Intent data) {
-        super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode == MainActivity.EDIT_INPUT_CONTROLS_REQUEST_CODE && resultCode == Activity.RESULT_OK) {
-            if (editInputControlsCallback != null) {
-                editInputControlsCallback.run();
-                editInputControlsCallback = null;
-            }
-        }
-    }
-
-    @Override
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
 
         if (hasFocus) {
-            if (capturePointerOnExternalMouse) touchpadView.requestPointerCapture();
-
-            if (winHandler != null && clipboardManager != null && clipboardManager.hasPrimaryClip()) {
-                ClipData primaryClip = clipboardManager.getPrimaryClip();
-                if (primaryClip != null && primaryClip.getItemCount() > 0) {
-                    winHandler.setClipboardData(primaryClip.getItemAt(0).getText().toString());
-                }
+            if (capturePointerOnExternalMouse && !dexMode) {
+                // Captured events are delivered to the focused view.
+                View captureView = inputControlsView.getVisibility() == View.VISIBLE ? inputControlsView : touchpadView;
+                if (captureView.requestFocus()) captureView.requestPointerCapture();
             }
+
+            pushAndroidClipboardToWine();
+        }
+    }
+
+    private void pushAndroidClipboardToWine() {
+        if (winHandler == null || clipboardManager == null || !clipboardManager.hasPrimaryClip()) return;
+        ClipData primaryClip = clipboardManager.getPrimaryClip();
+        if (primaryClip == null || primaryClip.getItemCount() == 0 || primaryClip.getItemAt(0).getText() == null) return;
+        String text = primaryClip.getItemAt(0).getText().toString();
+        if (!text.equals(lastPushedClip)) {
+            lastPushedClip = text;
+            winHandler.setClipboardData(text);
         }
     }
 
@@ -327,6 +343,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     protected void onDestroy() {
+        if (clipboardManager != null && primaryClipListener != null) clipboardManager.removePrimaryClipChangedListener(primaryClipListener);
         winHandler.stop();
         if (environment != null) environment.stopEnvironmentComponents();
         super.onDestroy();
@@ -335,6 +352,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     @Override
     public void onBackPressed() {
         if (environment != null) {
+            touchpadView.releaseCapture();
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) {
                 drawerLayout.openDrawer(GravityCompat.START);
             }
@@ -345,13 +363,10 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     @Override
     public boolean onNavigationItemSelected(@NonNull MenuItem item) {
         final GLRenderer renderer = xServerView.getRenderer();
+        touchpadView.releaseCapture();
         switch (item.getItemId()) {
             case R.id.menu_item_keyboard:
                 AppUtils.showKeyboard(this);
-                drawerLayout.closeDrawers();
-                break;
-            case R.id.menu_item_input_controls:
-                showInputControlsDialog();
                 drawerLayout.closeDrawers();
                 break;
             case R.id.menu_item_toggle_fullscreen:
@@ -385,17 +400,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
                 break;
             case R.id.menu_item_screen_effect:
                 (new ScreenEffectDialog(this)).show();
-                drawerLayout.closeDrawers();
-                break;
-            case R.id.menu_item_pip_mode:
-                PictureInPictureParams pipParams = (new PictureInPictureParams.Builder())
-                    .setAspectRatio(screenInfo.aspectRatio())
-                    .build();
-                enterPictureInPictureMode(pipParams);
-                drawerLayout.closeDrawers();
-                break;
-            case R.id.menu_item_logs:
-                debugDialog.show();
                 drawerLayout.closeDrawers();
                 break;
             case R.id.menu_item_touchpad_help:
@@ -476,6 +480,24 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         if (containerDataChanged) container.saveData();
     }
 
+    // DeX fork: refuse to boot a broken prefix instead of hanging on the spinner.
+    private boolean isContainerPrefixValid() {
+        if (container == null) return true;
+        try {
+            File systemReg = new File(container.getRootDir(), ".wine/system.reg");
+            if (!systemReg.isFile() || systemReg.length() < 10240) return false;
+            byte[] header = new byte[64];
+            try (java.io.FileInputStream in = new java.io.FileInputStream(systemReg)) {
+                int read = in.read(header);
+                if (read <= 0) return false;
+            }
+            return new String(header, java.nio.charset.StandardCharsets.UTF_8).contains("WINE REGISTRY");
+        }
+        catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private void setupXEnvironment() {
         String rootPath = rootFS.getRootDir().getPath();
         envVars.put("MESA_DEBUG", "silent");
@@ -485,7 +507,9 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         boolean enableWineDebug = preferences.getBoolean("enable_wine_debug", false);
         String wineDebugChannels = preferences.getString("wine_debug_channels", SettingsFragment.DEFAULT_WINE_DEBUG_CHANNELS);
-        envVars.put("WINEDEBUG", enableWineDebug && !wineDebugChannels.isEmpty() ? "+"+wineDebugChannels.replace(",", ",+") : "-all");
+        // DeX fork: keep wine errors in logs.txt even with the debug console off, so a
+        // startup hang leaves evidence instead of an empty log.
+        envVars.put("WINEDEBUG", enableWineDebug && !wineDebugChannels.isEmpty() ? "+"+wineDebugChannels.replace(",", ",+") : "err");
 
         FileUtils.clear(rootFS.getTmpDir());
 
@@ -552,6 +576,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
             overrideEnvVars = null;
         }
         environment.startEnvironmentComponents();
+        DexUtils.appendMarker(this, "environment components started, waiting for first window");
+        startBootWatchdog();
 
         winHandler.start();
         envVars.clear();
@@ -578,12 +604,40 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         globalCursorSpeed = preferences.getFloat("cursor_speed", 1.0f);
         capturePointerOnExternalMouse = preferences.getBoolean("capture_pointer_on_external_mouse", true);
         touchpadView = new TouchpadView(this, xServer, capturePointerOnExternalMouse);
-        touchpadView.setSensitivity(globalCursorSpeed);
+        touchpadView.setSensitivity(globalCursorSpeed * (dexMode ? DexUtils.getSystemPointerSpeedFactor(this) : 1.0f));
         touchpadView.setMoveCursorToTouchpoint(preferences.getBoolean("move_cursor_to_touchpoint", false));
         touchpadView.setFourFingersTapCallback(() -> {
             if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
         });
+        touchpadView.setPointerCaptureListener(new TouchpadView.PointerCaptureListener() {
+            @Override
+            public void onPointerCaptureChange(boolean hasCapture) {
+                pointerExitButton.setVisibility(hasCapture ? View.VISIBLE : View.GONE);
+            }
+
+            @Override
+            public void onEdgeExit() {
+                AppUtils.showToast(XServerDisplayActivity.this, R.string.pointer_capture_released);
+            }
+        });
         rootView.addView(touchpadView);
+
+        pointerExitButton = new ImageButton(this);
+        pointerExitButton.setImageResource(R.drawable.icon_exit);
+        pointerExitButton.setContentDescription(getString(R.string.release_pointer_capture));
+        pointerExitButton.setBackgroundResource(android.R.drawable.btn_default);
+        pointerExitButton.setAlpha(0.75f);
+        FrameLayout.LayoutParams exitParams = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        exitParams.gravity = android.view.Gravity.END | android.view.Gravity.BOTTOM;
+        exitParams.setMargins(0, 0, 32, 96);
+        pointerExitButton.setLayoutParams(exitParams);
+        pointerExitButton.setVisibility(View.GONE);
+        pointerExitButton.setOnClickListener((view) -> {
+            touchpadView.releaseCapture();
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+        });
+        rootView.addView(pointerExitButton);
+        setupQuickBar(rootView);
 
         inputControlsView = new InputControlsView(this);
         inputControlsView.setOverlayOpacity(preferences.getFloat("overlay_opacity", InputControlsView.DEFAULT_OVERLAY_OPACITY));
@@ -591,6 +645,7 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         inputControlsView.setXServer(xServer);
         inputControlsView.setVisibility(View.GONE);
         rootView.addView(inputControlsView);
+        applyOfficeMode();
 
         if (container != null && container.getHUDMode() != FrameRating.Mode.DISABLED.ordinal()) {
             frameRating = new FrameRating(this);
@@ -609,60 +664,6 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
         if (MainActivity.DEBUG_MODE) rootView.addView(AppUtils.createDebugMsgTextView(this));
         AppUtils.observeSoftKeyboardVisibility(drawerLayout, renderer::setScreenOffsetYRelativeToCursor);
-    }
-
-    private void showInputControlsDialog() {
-        final ContentDialog dialog = new ContentDialog(this, R.layout.input_controls_dialog);
-        dialog.setTitle(R.string.input_controls);
-        dialog.setIcon(R.drawable.icon_input_controls);
-
-        final Spinner sProfile = dialog.findViewById(R.id.SProfile);
-        Runnable loadProfileSpinner = () -> {
-            ArrayList<ControlsProfile> profiles = inputControlsManager.getProfiles(true);
-            ArrayList<String> profileItems = new ArrayList<>();
-            int selectedPosition = 0;
-            profileItems.add("-- "+getString(R.string.disabled)+" --");
-            for (int i = 0; i < profiles.size(); i++) {
-                ControlsProfile profile = profiles.get(i);
-                if (profile == inputControlsView.getProfile()) selectedPosition = i + 1;
-                profileItems.add(profile.getName());
-            }
-
-            sProfile.setAdapter(new ArrayAdapter<>(this, android.R.layout.simple_spinner_dropdown_item, profileItems));
-            sProfile.setSelection(selectedPosition);
-        };
-        loadProfileSpinner.run();
-
-        final CheckBox cbRelativeMouseMovement = dialog.findViewById(R.id.CBRelativeMouseMovement);
-        cbRelativeMouseMovement.setChecked(xServer.isRelativeMouseMovement());
-
-        final CheckBox cbShowTouchscreenControls = dialog.findViewById(R.id.CBShowTouchscreenControls);
-        cbShowTouchscreenControls.setChecked(inputControlsView.isShowTouchscreenControls());
-
-        dialog.findViewById(R.id.BTSettings).setOnClickListener((v) -> {
-            int position = sProfile.getSelectedItemPosition();
-            Intent intent = new Intent(this, MainActivity.class);
-            intent.putExtra("edit_input_controls", true);
-            intent.putExtra("selected_profile_id", position > 0 ? inputControlsManager.getProfiles().get(position - 1).id : 0);
-            editInputControlsCallback = () -> {
-                hideInputControls();
-                inputControlsManager.loadProfiles(true);
-                loadProfileSpinner.run();
-            };
-            startActivityForResult(intent, MainActivity.EDIT_INPUT_CONTROLS_REQUEST_CODE);
-        });
-
-        dialog.setOnConfirmCallback(() -> {
-            xServer.setRelativeMouseMovement(cbRelativeMouseMovement.isChecked());
-            inputControlsView.setShowTouchscreenControls(cbShowTouchscreenControls.isChecked());
-            int position = sProfile.getSelectedItemPosition();
-            if (position > 0) {
-                showInputControls(inputControlsManager.getProfiles().get(position - 1));
-            }
-            else hideInputControls();
-        });
-
-        dialog.show();
     }
 
     private void showInputControls(ControlsProfile profile) {
@@ -701,6 +702,101 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
         }
 
         inputControlsView.invalidate();
+    }
+
+    private ImageButton makeQuickButton(int iconResId, int descResId, View.OnClickListener onClick) {
+        ImageButton button = new ImageButton(this);
+        button.setImageResource(iconResId);
+        button.setContentDescription(getString(descResId));
+        button.setBackgroundResource(android.R.drawable.btn_default);
+        button.setAlpha(0.75f);
+        button.setOnClickListener(onClick);
+        return button;
+    }
+
+    // Mouse-driven quick actions inside the container/shortcut session, no shortcut knowledge needed.
+    private void setupQuickBar(FrameLayout rootView) {
+        float density = getResources().getDisplayMetrics().density;
+        int margin = (int)(12 * density);
+
+        LinearLayout quickPanel = new LinearLayout(this);
+        quickPanel.setOrientation(LinearLayout.VERTICAL);
+        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT);
+        panelParams.gravity = android.view.Gravity.END | android.view.Gravity.TOP;
+        panelParams.setMargins(0, margin, margin, 0);
+        quickPanel.setLayoutParams(panelParams);
+
+        ImageButton quickToggle = makeQuickButton(R.drawable.icon_settings, R.string.quick_actions, (view) -> {
+            quickBar.setVisibility(quickBar.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE);
+        });
+        quickPanel.addView(quickToggle);
+
+        quickBar = new LinearLayout(this);
+        quickBar.setOrientation(LinearLayout.VERTICAL);
+        quickBar.setVisibility(View.GONE);
+        LinearLayout.LayoutParams barItemParams = new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        barItemParams.topMargin = margin;
+        ImageButton keyboardButton = makeQuickButton(R.drawable.icon_keyboard, R.string.keyboard, (view) -> AppUtils.showKeyboard(this));
+        ImageButton releaseButton = makeQuickButton(R.drawable.icon_exit, R.string.release_pointer_capture, (view) -> touchpadView.releaseCapture());
+        ImageButton menuButton = makeQuickButton(R.drawable.icon_menu, R.string.open_menu, (view) -> {
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+        });
+        quickBar.addView(keyboardButton, barItemParams);
+        quickBar.addView(releaseButton, barItemParams);
+        quickBar.addView(menuButton, barItemParams);
+        quickPanel.addView(quickBar);
+        rootView.addView(quickPanel);
+    }
+
+    // DeX-only build: office mode always, no game mode.
+    private void applyOfficeMode() {
+        if (touchpadView == null) return;
+        xServer.setRelativeMouseMovement(false);
+        touchpadView.setCaptureAllowed(capturePointerOnExternalMouse && !dexMode);
+        updateCursorVisibility();
+        if (dexMode) AppUtils.showToast(this, R.string.dex_mode_enabled);
+    }
+
+    // DeX fork: never hang silently. If Wine maps no window in 90s, show a
+    // diagnostics report the tester can copy and send back.
+    private void startBootWatchdog() {
+        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+            if (firstWindowMapped || isFinishing() || isDestroyed()) return;
+            DexUtils.appendMarker(this, "watchdog: no window after 90s");
+            final String report = buildBootReport();
+            new AlertDialog.Builder(this)
+                .setTitle("Wine không khởi động")
+                .setMessage(report)
+                .setCancelable(false)
+                .setPositiveButton(R.string.copy, (dialog, which) -> {
+                    ClipboardManager cm = (ClipboardManager)getSystemService(CLIPBOARD_SERVICE);
+                    if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("winlator-dex-report", report));
+                    AppUtils.showToast(this, R.string.logs_exported_to);
+                })
+                .setNegativeButton(R.string.exit, (dialog, which) -> finish())
+                .show();
+        }, 90000);
+    }
+
+    private String buildBootReport() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Wine: ").append(container != null ? container.getWineVersion() : "?").append('\n');
+        sb.append("Box64 preset: ").append(container != null ? container.getBox64Preset() : "?").append('\n');
+        sb.append("Graphics: ").append(container != null ? container.getGraphicsDriver() : "?").append('\n');
+        sb.append("Screen: ").append(screenInfo).append('\n');
+        if (container != null) {
+            File systemReg = new File(container.getRootDir(), ".wine/system.reg");
+            sb.append("system.reg: ").append(systemReg.isFile() ? systemReg.length() + " bytes" : "missing").append('\n');
+        }
+        File logFile = LogView.getLogFile();
+        sb.append("logs.txt: ").append(logFile.isFile() ? logFile.length() + " bytes" : "missing").append('\n');
+        sb.append("startup.log + logs.txt + crash.txt: Documents/WinlatorDeX/");
+        return sb.toString();
+    }
+
+    private void updateCursorVisibility() {
+        ControlsProfile profile = inputControlsView.getProfile();
+        xServerView.getRenderer().setCursorVisible(profile == null || profile.isCursorVisible());
     }
 
     private void extractGraphicsDriverFiles() {
@@ -782,6 +878,12 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getKeyCode() == KeyEvent.KEYCODE_G
+            && event.isCtrlPressed() && event.isAltPressed()) {
+            touchpadView.releaseCapture();
+            if (!drawerLayout.isDrawerOpen(GravityCompat.START)) drawerLayout.openDrawer(GravityCompat.START);
+            return true;
+        }
         return (!inputControlsView.onKeyEvent(event) && !winHandler.onKeyEvent(event) && xServer.keyboard.onKeyEvent(event)) ||
                (!ExternalController.isGameController(event.getDevice()) && super.dispatchKeyEvent(event));
     }

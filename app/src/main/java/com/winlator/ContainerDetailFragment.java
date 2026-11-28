@@ -42,6 +42,7 @@ import com.winlator.contentdialog.ContentDialog;
 import com.winlator.contentdialog.VortekConfigDialog;
 import com.winlator.core.AppUtils;
 import com.winlator.core.Callback;
+import com.winlator.core.DexUtils;
 import com.winlator.container.DXWrapperPicker;
 import com.winlator.core.EnvVars;
 import com.winlator.core.FileUtils;
@@ -68,7 +69,6 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 
 public class ContainerDetailFragment extends Fragment {
@@ -134,7 +134,7 @@ public class ContainerDetailFragment extends Fragment {
         final Spinner sWineVersion = view.findViewById(R.id.SWineVersion);
         if (wineInfos.size() > 1) loadWineVersionSpinner(view, sWineVersion, wineInfos);
 
-        loadScreenSizeSpinner(view, isEditMode() ? container.getScreenSize() : Container.DEFAULT_SCREEN_SIZE);
+        loadScreenSizeSpinner(view, isEditMode() ? container.getScreenSize() : getDefaultScreenSize(context));
 
         final String oldGraphicsDriverConfig = isEditMode() ? container.getGraphicsDriverConfig() : "";
         String selectedGraphicsDriver = isEditMode() ? container.getGraphicsDriver() : GraphicsDrivers.getDefaultDriver(context);
@@ -176,6 +176,7 @@ public class ContainerDetailFragment extends Fragment {
         final EnvVarsView envVarsView = createEnvVarsTab(view);
         createWinComponentsTab(view, isEditMode() ? container.getWinComponents() : Container.DEFAULT_WINCOMPONENTS);
         createDrivesTab(view);
+        if (DexUtils.isDesktopMode(context) || DexUtils.hasExternalDisplay(context)) DexUtils.enableDialogModeForAllSpinners(view);
 
         AppUtils.setupTabLayout(view, R.id.TabLayout, (tabResId) -> {
             if (tabResId == R.id.LLTabAdvanced) if ((byte)sWinVersion.getTag() == -1) WinVersions.loadSpinner(container, sWinVersion);
@@ -277,10 +278,8 @@ public class ContainerDetailFragment extends Fragment {
             SeekBar sbLogPixels = view.findViewById(R.id.SBLogPixels);
             registryEditor.setDwordValue("Control Panel\\Desktop", "LogPixels", (int)sbLogPixels.getValue());
 
-            Spinner sMouseWarpOverride = view.findViewById(R.id.SMouseWarpOverride);
-
-            final String[] mouseWarpOverrideValues = new String[]{"disable", "enable", "force"};
-            registryEditor.setStringValue("Software\\Wine\\DirectInput", "MouseWarpOverride", mouseWarpOverrideValues[sMouseWarpOverride.getSelectedItemPosition()]);
+            // DeX-only: DirectInput mouse warp always off, follows the absolute DeX mouse.
+            registryEditor.setStringValue("Software\\Wine\\DirectInput", "MouseWarpOverride", "disable");
 
             registryEditor.setStringValue("Software\\Wine\\Direct3D", "shader_backend", "glsl");
             registryEditor.setStringValue("Software\\Wine\\Direct3D", "UseGLSL", "enabled");
@@ -336,12 +335,11 @@ public class ContainerDetailFragment extends Fragment {
 
             SeekBar sbLogPixels = view.findViewById(R.id.SBLogPixels);
             sbLogPixels.setValue(registryEditor.getDwordValue("Control Panel\\Desktop", "LogPixels", 96));
-
-            List<String> mouseWarpOverrideList = Arrays.asList(context.getString(R.string.disable), context.getString(R.string.enable), context.getString(R.string.force));
-            Spinner sMouseWarpOverride = view.findViewById(R.id.SMouseWarpOverride);
-            sMouseWarpOverride.setAdapter(new ArrayAdapter<>(context, android.R.layout.simple_spinner_dropdown_item, mouseWarpOverrideList));
-            AppUtils.setSpinnerSelectionFromValue(sMouseWarpOverride, registryEditor.getStringValue("Software\\Wine\\DirectInput", "MouseWarpOverride", "disable"));
         }
+    }
+
+    public static String getDefaultScreenSize(Context context) {
+        return (DexUtils.isDesktopMode(context) || DexUtils.hasExternalDisplay(context)) ? "1920x1080" : Container.DEFAULT_SCREEN_SIZE;
     }
 
     public static String getScreenSize(View view) {
@@ -436,7 +434,8 @@ public class ContainerDetailFragment extends Fragment {
     private EnvVarsView createEnvVarsTab(final View view) {
         final Context context = view.getContext();
         final EnvVarsView envVarsView = view.findViewById(R.id.EnvVarsView);
-        envVarsView.setEnvVars(new EnvVars(isEditMode() ? container.getEnvVars() : Container.DEFAULT_ENV_VARS));
+        EnvVars defaultEnvVars = new EnvVars(isEditMode() ? container.getEnvVars() : Container.DEFAULT_ENV_VARS);
+        envVarsView.setEnvVars(defaultEnvVars);
         view.findViewById(R.id.BTAddEnvVar).setOnClickListener((v) -> (new AddEnvVarDialog(context, envVarsView)).show());
         return envVarsView;
     }

@@ -10,7 +10,7 @@ import androidx.preference.PreferenceManager;
 import java.util.Locale;
 
 public class LocaleHelper {
-    private static final String[] supportedLocales = {"en_US", "pt_BR", "ru_RU"};
+    private static final String[] supportedLocales = {"en_US", "pt_BR", "ru_RU", "vi_VN"};
 
     public static int getLocaleIndex(Context context) {
         Configuration configuration = context.getResources().getConfiguration();
@@ -27,6 +27,7 @@ public class LocaleHelper {
         SharedPreferences preferences = PreferenceManager.getDefaultSharedPreferences(context);
         int index = preferences.getInt("lc_index", -1);
 
+        if (index < 0) index = getLocaleIndex(context);
         if (index < 0 || index >= supportedLocales.length) return context;
         Locale locale = new Locale(supportedLocales[index].substring(0, 2));
         Locale.setDefault(locale);
@@ -38,14 +39,9 @@ public class LocaleHelper {
     }
 
     public static void setEnvVars(EnvVars envVars) {
-        Locale locale = Locale.getDefault();
-        for (String name : supportedLocales) {
-            if (locale.toString().startsWith(name.substring(0, 2))) {
-                envVars.put("LC_ALL", name+".UTF-8");
-                return;
-            }
-        }
-
+        // DeX fork: Wine UI language is added by the app, but the guest glibc may
+        // lack non-English locale data (e.g. vi_VN), which breaks Wine startup.
+        // Keep the guest on en_US; the Android UI language is unaffected.
         envVars.put("LC_ALL", "en_US.UTF-8");
     }
 }

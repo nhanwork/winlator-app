@@ -44,7 +44,7 @@ import java.util.TimerTask;
 
 public abstract class AppUtils {
     public static final String DIRECTORY_DOWNLOADS = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getPath();
-    public static final String INTERNAL_STORAGE = "/data/data/com.winlator/storage";
+    public static final String INTERNAL_STORAGE = "/data/data/com.winlator.dex/storage";
     private static WeakReference<Toast> globalToastReference = null;
 
     public static class RestartApplicationOptions {
@@ -91,6 +91,7 @@ public abstract class AppUtils {
     }
 
     public static void hideSystemUI(final Activity activity) {
+        if (DexUtils.isDesktopMode(activity)) return;
         Window window = activity.getWindow();
         final View decorView = window.getDecorView();
 
