@@ -795,8 +795,8 @@ public class XServerDisplayActivity extends AppCompatActivity implements Navigat
     }
 
     private void updateCursorVisibility() {
-        ControlsProfile profile = inputControlsView.getProfile();
-        xServerView.getRenderer().setCursorVisible(profile == null || profile.isCursorVisible());
+        // v11.2 base has no per-profile cursor flag.
+        xServerView.getRenderer().setCursorVisible(true);
     }
 
     private void extractGraphicsDriverFiles() {
